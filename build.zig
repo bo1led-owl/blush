@@ -34,7 +34,7 @@ pub fn build(b: *std.Build) void {
 
     const should_strip = !debug_mode;
     const exe = b.addExecutable(.{
-        .name = "csh",
+        .name = "blush",
         .target = target,
         .optimize = optimize,
         .strip = should_strip,
