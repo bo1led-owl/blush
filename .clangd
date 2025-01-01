@@ -1,2 +1,14 @@
 CompileFlags:
-  Add: [-Wall, -Wextra, -xc, -std=c11]
+  Add: [
+    -Wall,
+    -Wextra,
+    -xc,
+    -std=c99,
+    -Wpedantic,
+    -Wduplicated-branches,
+    -Wduplicated-cond,
+    -Wcast-qual,
+    -Wconversion,
+    -Wsign-conversion,
+    -Wlogical-op,
+  ]
