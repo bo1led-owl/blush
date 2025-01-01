@@ -1,9 +1,9 @@
 CompileFlags:
   Add: [
+    -xc,
+    -std=iso9899:1999,
     -Wall,
     -Wextra,
-    -xc,
-    -std=c99,
     -Wpedantic,
     -Wduplicated-branches,
     -Wduplicated-cond,

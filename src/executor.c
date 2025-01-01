@@ -2,6 +2,7 @@
 
 #include <assert.h>
 #include <ctype.h>
+#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <sys/types.h>
@@ -70,7 +71,7 @@ static int isquote(int c) {
 }
 
 static int isargch(int c) {
-    return isalnum(c) || c == '-' || c == '_' || c == '/' || c == '.';
+    return isalnum(c) || c == '-' || c == '_' || c == '/' || c == '.' || c == '=';
 }
 
 static bool Tokenizer_nextTok(Tokenizer* self, Literals* lits, Token* result) {
@@ -125,7 +126,9 @@ static bool Tokenizer_nextTok(Tokenizer* self, Literals* lits, Token* result) {
     return true;
 }
 
-void execute(const char* cmd, const size_t len) {
+int execute(const char* cmd, const size_t len) {
+    int res = 0;
+
     Tokenizer tokenizer;
     Tokenizer_init(&tokenizer, cmd, len);
 
@@ -142,16 +145,22 @@ void execute(const char* cmd, const size_t len) {
     if (pid == 0) {
         int res = execvp(lits.items[0], lits.items);
         if (res == -1) {
-            perror("execvp");
-            abort();
+            exit(errno);
         }
     } else {
         int st;
         waitpid(pid, &st, 0);
+        st = WEXITSTATUS(st);
+        if (st != 0) {
+            errno = st;
+            res = -1;
+        }
     }
 
     for (size_t i = 0; i < lits.size; ++i) {
         free(lits.items[i]);
     }
     Literals_deinit(&lits);
+
+    return res;
 }

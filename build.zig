@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const main_flags: []const []const u8 = &.{
-    "-std=c99",
+    "-std=iso9899:1999",
     "-Wall",
     "-Wextra",
     "-Wpedantic",
