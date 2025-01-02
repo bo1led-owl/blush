@@ -105,9 +105,11 @@ static bool Tokenizer_nextTok(Tokenizer* self, String* lit, Token* result) {
 
     if (isspace(c)) {
         Tokenizer_eatWhile(self, isspace);
-        *result = (Token){
-            .kind = TokenKind_Whitespace,
-        };
+        *result = (Token){.kind = TokenKind_Whitespace};
+    } else if (c == '=') {
+        Tokenizer_eatChar(self);  // eat `=`
+        *result = (Token){.kind = TokenKind_EqSign};
+        return true;
     } else if (c == '$') {
         Tokenizer_eatChar(self);  // eat `$`
 
@@ -116,9 +118,7 @@ static bool Tokenizer_nextTok(Tokenizer* self, String* lit, Token* result) {
         size_t len = self->cur - prev_cur;
         String_appendSlice(lit, self->s + prev_cur, len);
         String_append(lit, '\0');
-        *result = (Token){
-            .kind = TokenKind_VariableReference,
-        };
+        *result = (Token){.kind = TokenKind_VariableReference};
     } else if (isargch(c) || isquote(c)) {
         for (;;) {
             if (isargch(c)) {
@@ -138,11 +138,9 @@ static bool Tokenizer_nextTok(Tokenizer* self, String* lit, Token* result) {
             }
             c = Tokenizer_peekChar(self);
         }
-        *result = (Token){
-            .kind = TokenKind_String,
-        };
+        *result = (Token){.kind = TokenKind_String};
     } else {
-        fprintf(stderr, "wtf\n");
+        fprintf(stderr, "%c wtf\n", c);
         abort();
     }
 
@@ -250,17 +248,17 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
                 }
                 String_append(&cur_arg, '=');
                 break;
-            case TokenKind_String: {
+            case TokenKind_String:
                 null_arg = false;
                 String_appendSlice(&cur_arg, lit.items, lit.size);
-                String_clear(&lit);
-            } break;
+                break;
             case TokenKind_VariableReference:
-                null_arg = false;
                 String_append(&lit, '\0');
                 const char* val = Executor_getVar(self, lit.items);
-                String_appendSlice(&cur_arg, val, strlen(val));
-                String_clear(&lit);
+                if (val) {
+                    null_arg = false;
+                    String_appendSlice(&cur_arg, val, strlen(val));
+                }
                 break;
         }
         String_clear(&lit);
@@ -268,7 +266,11 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
 
     if (!null_arg) {
         String_append(&cur_arg, '\0');
-        Strings_append(&args, String_toOwnedSlice(&cur_arg));
+        if (!parsing_assignment) {
+            Strings_append(&args, String_toOwnedSlice(&cur_arg));
+        } else {
+            Executor_setVarRaw(self, cur_arg.items, true);
+        }
     }
 
     String_deinit(&cur_arg);
