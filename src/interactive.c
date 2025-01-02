@@ -50,14 +50,14 @@ static struct {
     size_t row, col;
     size_t line_start;
     enum {
-        State_AwaitingCommand,
         State_Normal,
         State_EscSeq,
         State_CtrlSeq,
     } state;
+    Executor executor;
 } state;
 
-static void stdoutWrite(char* s, size_t n) {
+static void stdoutWrite(const char* s, size_t n) {
     fwrite(s, 1, n, stdout);
 }
 
@@ -65,7 +65,7 @@ static void stdoutFlush(void) {
     fflush(stdout);
 }
 
-static void stderrWrite(char* s, size_t n) {
+static void stderrWrite(const char* s, size_t n) {
     fwrite(s, 1, n, stderr);
 }
 
@@ -127,6 +127,7 @@ static void handle_winch(int sig) {
 
 static void deinit(void) {
     disableRawMode();
+    Executor_deinit(&state.executor);
 }
 
 static void init(void) {
@@ -136,10 +137,10 @@ static void init(void) {
     updateWindowSize();
     updateCursorPosition();
 
-    state.state = State_AwaitingCommand;
+    Executor_init(&state.executor);
 
-    setenv("PS1", "$ ", 0);
-    setenv("PS2", "> ", 0);
+    Executor_setVar(&state.executor, "PS1", "$ ", false);
+    Executor_setVar(&state.executor, "PS2", "> ", false);
 }
 
 static void moveToNextLine(void) {
@@ -153,7 +154,7 @@ static void moveToNextLine(void) {
 }
 
 static void prompt(void) {
-    char* ps1 = getenv("PS1");
+    const char* ps1 = Executor_getVar(&state.executor, "PS1");
     size_t len = strlen(ps1);
     stderrWrite(ps1, len);
     state.line_start = len;
@@ -163,12 +164,14 @@ static void prompt(void) {
 void replLoop(void) {
     init();
 
+    bool awaiting_command = true;
+    
     String line;
     String_init(&line);
     for (;;) {
-        if (state.state == State_AwaitingCommand) {
+        if (awaiting_command) {
             prompt();
-            state.state = State_Normal;
+            awaiting_command = false;
         }
 
         int c = getchar();
@@ -181,9 +184,6 @@ void replLoop(void) {
         }
 
         switch (state.state) {
-            case State_AwaitingCommand:
-                assert(0);
-                __builtin_unreachable();
             case State_Normal:
                 switch (c) {
                     case 0x1B:
@@ -194,7 +194,7 @@ void replLoop(void) {
                         stdoutFlush();
                         state.row = 0;
                         state.col = 0;
-                        state.state = State_AwaitingCommand;
+                        awaiting_command = true;
                         break;
                     case 8:    // backspace
                     case 127:  // delete
@@ -221,8 +221,8 @@ void replLoop(void) {
                         stdoutFlush();
 
                         disableRawMode();
-                        if (execute(line.items, line.size) != 0) {
-                            perror("Failed to execute the command");
+                        if (Executor_execute(&state.executor, line.items, line.size) != 0) {
+                            fprintf(stderr, "Command not found\n");
                         }
                         enableRawMode();
                         updateWindowSize();
@@ -234,7 +234,7 @@ void replLoop(void) {
                             moveToNextLine();
                         }
                         stdoutFlush();
-                        state.state = State_AwaitingCommand;
+                        awaiting_command = true;
                         break;
                     default:
                         String_insert(&line, (char)c, state.col - state.line_start);

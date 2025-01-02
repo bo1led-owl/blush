@@ -1,5 +1,23 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 
-int execute(const char* cmd, const size_t len);
+#include "vars.h"
+
+typedef struct {
+    Vars vars;
+} Executor;
+
+void Executor_init(Executor* self);
+void Executor_deinit(Executor* self);
+
+typedef enum {
+    ExecutionResult_Success,
+    ExecutionResult_Failure,
+    ExecutionResult_NeedMoreInput,
+} ExecutionResult;
+ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t len);
+
+const char* Executor_getVar(Executor* self, const char* name);
+void Executor_setVar(Executor* self, const char* name, const char* value, bool replace);

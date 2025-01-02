@@ -1,4 +1,4 @@
 #pragma once
 
 #include "array_list.h"
-ARRAY_LIST(char, String)
+ARRAY_LIST_DEFINITION(char, String)

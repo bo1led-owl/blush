@@ -23,8 +23,8 @@ const files: []const []const u8 = &.{
     "src/main.c",
     "src/executor.c",
     "src/interactive.c",
-    "src/arena.c",
     "src/dyn_string.c",
+    "src/vars.c",
 };
 
 pub fn build(b: *std.Build) void {

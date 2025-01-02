@@ -1,5 +1,5 @@
 BasedOnStyle: Google
-ColumnLimit: 120
+ColumnLimit: 100
 IndentWidth: 4
 AllowShortBlocksOnASingleLine: Empty
 AllowShortEnumsOnASingleLine: false
