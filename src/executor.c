@@ -2,9 +2,9 @@
 
 #include <assert.h>
 #include <ctype.h>
-#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -18,6 +18,7 @@ typedef enum {
     TokenKind_EqSign,
     TokenKind_String,
     TokenKind_VariableReference,
+    TokenKind_LastExitCodeReq,
 } TokenKind;
 
 typedef struct {
@@ -113,12 +114,17 @@ static bool Tokenizer_nextTok(Tokenizer* self, String* lit, Token* result) {
     } else if (c == '$') {
         Tokenizer_eatChar(self);  // eat `$`
 
-        size_t prev_cur = self->cur;
-        Tokenizer_eatWhile(self, isalnum);
-        size_t len = self->cur - prev_cur;
-        String_appendSlice(lit, self->s + prev_cur, len);
-        String_append(lit, '\0');
-        *result = (Token){.kind = TokenKind_VariableReference};
+        if (Tokenizer_peekChar(self) == '?') {
+            Tokenizer_eatChar(self);  // eat '?'
+            *result = (Token){.kind = TokenKind_LastExitCodeReq};
+        } else {
+            size_t prev_cur = self->cur;
+            Tokenizer_eatWhile(self, isalnum);
+            size_t len = self->cur - prev_cur;
+            String_appendSlice(lit, self->s + prev_cur, len);
+            String_append(lit, '\0');
+            *result = (Token){.kind = TokenKind_VariableReference};
+        }
     } else if (isargch(c) || isquote(c)) {
         for (;;) {
             if (isargch(c)) {
@@ -149,6 +155,7 @@ static bool Tokenizer_nextTok(Tokenizer* self, String* lit, Token* result) {
 
 void Executor_init(Executor* self) {
     Vars_init(&self->vars);
+    self->last_exit_code = 0;
 }
 
 void Executor_deinit(Executor* self) {
@@ -171,10 +178,10 @@ void Executor_setVarRaw(Executor* self, char* s, bool replace) {
     Executor_setVar(self, name, value, replace);
 }
 
-static void Executor_cd(Executor* self, size_t argc, char const* const* argv) {
+static int Executor_cd(Executor* self, size_t argc, char const* const* argv) {
     if (argc > 1) {
         fprintf(stderr, "Expected 1 or less arguments, got %zu\n", argc);
-        return;
+        return 1;
     }
 
     const char* path = NULL;
@@ -186,21 +193,32 @@ static void Executor_cd(Executor* self, size_t argc, char const* const* argv) {
 
     if (chdir(path) == -1) {
         perror("cd");
+        return 1;
     }
+    return 0;
 }
 
-static bool forkExec(char* const* args, char* const* env) {
+/// Returns `true` if the `exec` was successful
+static bool forkExec(char* const* args, char* const* env, int* exit_code) {
+    struct stat stats;
+    if (stat(args[0], &stats) == -1) {
+        return false;
+    }
+    if (!(stats.st_mode & S_IXUSR)) {  // check whether the file is executable
+        return false;
+    }
+
     pid_t pid = fork();
     if (pid == 0) {
         int res = execve(args[0], args, env);
         if (res == -1) {
-            exit(errno);
+            exit(1);
         }
     } else {
         int st;
         waitpid(pid, &st, 0);
-        st = WEXITSTATUS(st);
-        return st == 0;
+        *exit_code = WEXITSTATUS(st);
+        return true;
     }
 
     assert(0);
@@ -252,6 +270,13 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
                 null_arg = false;
                 String_appendSlice(&cur_arg, lit.items, lit.size);
                 break;
+            case TokenKind_LastExitCodeReq: {
+                null_arg = false;
+                char buf[11];
+                size_t len = (size_t)snprintf(buf, sizeof(buf), "%d", self->last_exit_code);
+                String_appendSlice(&cur_arg, buf, len);
+                break;
+            }
             case TokenKind_VariableReference:
                 String_append(&lit, '\0');
                 const char* val = Executor_getVar(self, lit.items);
@@ -281,7 +306,8 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
     }
 
     if (strcmp(args.items[0], "cd") == 0) {
-        Executor_cd(self, args.size - 1, (char const* const*)(args.items + 1));
+        self->last_exit_code =
+            Executor_cd(self, args.size - 1, (char const* const*)(args.items + 1));
     } else {
         Strings_append(&args, NULL);
         const char* path = Executor_getVar(self, "PATH");
@@ -291,7 +317,7 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
         if (exe_len == 0) {
             res = ExecutionResult_Failure;
         } else if (exe[0] == '.' || strchr(exe, '/') != NULL) {
-            if (!forkExec(args.items, self->vars.items)) {
+            if (!forkExec(args.items, self->vars.items, &self->last_exit_code)) {
                 res = ExecutionResult_Failure;
             }
         } else {
@@ -319,7 +345,7 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
                 String_append(&buf, '\0');
 
                 args.items[0] = buf.items;
-                if (forkExec(args.items, self->vars.items)) {
+                if (forkExec(args.items, self->vars.items, &self->last_exit_code)) {
                     break;
                 } else if (!colon) {
                     res = ExecutionResult_Failure;

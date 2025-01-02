@@ -9,7 +9,8 @@ const main_flags: []const []const u8 = &.{
     "-Wconversion",
     "-Wsign-conversion",
 };
-const debug_flags: []const []const u8 = &.{
+
+const sanitizer_flags: []const []const u8 = &.{
     "-fsanitize=address",
     "-fsanitize=undefined",
     "-fsanitize=pointer-compare",
@@ -17,7 +18,6 @@ const debug_flags: []const []const u8 = &.{
     "-fsanitize=leak",
     "-fsanitize-address-use-after-scope",
 };
-const release_flags: []const []const u8 = &.{};
 
 const files: []const []const u8 = &.{
     "src/main.c",
@@ -28,6 +28,8 @@ const files: []const []const u8 = &.{
 };
 
 pub fn build(b: *std.Build) void {
+    const link_asan = b.option(bool, "use-sanitizers", "Link asan library and use sanitizers") orelse false;
+
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const debug_mode = optimize == std.builtin.OptimizeMode.Debug;
@@ -40,21 +42,14 @@ pub fn build(b: *std.Build) void {
         .strip = should_strip,
         .link_libc = true,
     });
-    const flags = if (debug_mode) main_flags ++ debug_flags else main_flags ++ release_flags;
+
+    const flags = if (link_asan) main_flags ++ sanitizer_flags else main_flags;
     exe.addCSourceFiles(.{
         .files = files,
         .flags = flags,
     });
-    if (debug_mode) {
+    if (link_asan) {
         exe.linkSystemLibrary("asan");
     }
     b.installArtifact(exe);
-
-    const run_cmd = b.addRunArtifact(exe);
-    run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
-    const run_step = b.step("run", "Run the app");
-    run_step.dependOn(&run_cmd.step);
 }

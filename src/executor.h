@@ -7,6 +7,7 @@
 
 typedef struct {
     Vars vars;
+    int last_exit_code;
 } Executor;
 
 void Executor_init(Executor* self);
