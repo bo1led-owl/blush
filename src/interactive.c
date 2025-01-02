@@ -5,15 +5,7 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
-
-#ifndef __USE_XOPEN2K
-#define __USE_XOPEN2K
 #include <stdlib.h>
-#undef __USE_XOPEN2K
-#else
-#include <stdlib.h>
-#endif
-
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
@@ -22,6 +14,8 @@
 #include "dyn_string.h"
 #include "executor.h"
 
+// turn off the formatter because it can break some literals
+// clang-format off
 #define ANSI_LITERAL(code) "\x1b[" #code
 
 #define COLOR_RESET ANSI_LITERAL(0m)
@@ -43,6 +37,7 @@
 #define SCROLL_UP ANSI_LITERAL(S)
 #define CLEAR_SCREEN ANSI_LITERAL(2J)
 #define DSR ANSI_LITERAL(6n) /* Device Status Report */
+// clang-format on
 
 static struct termios orig_termios;
 static struct {
@@ -165,7 +160,7 @@ void replLoop(void) {
     init();
 
     bool awaiting_command = true;
-    
+
     String line;
     String_init(&line);
     for (;;) {
@@ -198,7 +193,8 @@ void replLoop(void) {
                         break;
                     case 8:    // backspace
                     case 127:  // delete
-                        if (state.col - state.line_start <= line.size && state.col > state.line_start) {
+                        if (state.col - state.line_start <= line.size &&
+                            state.col > state.line_start) {
                             String_remove(&line, state.col - state.line_start - 1);
                             state.col -= 1;
 

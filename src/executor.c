@@ -290,7 +290,7 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
         size_t exe_len = strlen(exe);
         if (exe_len == 0) {
             res = ExecutionResult_Failure;
-        } else if (exe[0] == '.') {
+        } else if (exe[0] == '.' || strchr(exe, '/') != NULL) {
             if (!forkExec(args.items, self->vars.items)) {
                 res = ExecutionResult_Failure;
             }
@@ -300,6 +300,16 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
             for (;;) {
                 const char* colon = strchr(path, ':');
                 const size_t len = (colon) ? (size_t)(colon - path) : strlen(path);
+                if (len == 0) {
+                    if (!colon) {
+                        res = ExecutionResult_Failure;
+                        break;
+                    } else {
+                        path = colon + 1;
+                        continue;
+                    }
+                }
+
                 String_clear(&buf);
                 String_appendSlice(&buf, path, len);
                 if (buf.items[buf.size - 1] != '/') {
