@@ -17,6 +17,7 @@ typedef enum {
     TokenKind_Whitespace,
     TokenKind_EqSign,
     TokenKind_String,
+    TokenKind_Tilda,
     TokenKind_VariableReference,
     TokenKind_LastExitCodeReq,
 } TokenKind;
@@ -72,7 +73,7 @@ static int isquote(int c) {
 }
 
 static int isargch(int c) {
-    return isalnum(c) || c == '-' || c == '_' || c == '/' || c == '.';
+    return isalnum(c) || c == '~' || c == '-' || c == '_' || c == '/' || c == '.';
 }
 
 static void Tokenizer_readArg(Tokenizer* self, String* lit) {
@@ -107,6 +108,17 @@ static bool Tokenizer_nextTok(Tokenizer* self, String* lit, Token* result) {
     if (isspace(c)) {
         Tokenizer_eatWhile(self, isspace);
         *result = (Token){.kind = TokenKind_Whitespace};
+        return true;
+    } else if (c == '~') {
+        Tokenizer_eatChar(self);  // eat `~`
+        int next_ch = Tokenizer_peekChar(self);
+        if (next_ch == EOF || isspace(next_ch) || next_ch == '/') {
+            *result = (Token){.kind = TokenKind_Tilda};
+            return true;
+        } else {
+            // otherwise we should fall into `string` case
+            self->cur -= 1;
+        }
     } else if (c == '=') {
         Tokenizer_eatChar(self);  // eat `=`
         *result = (Token){.kind = TokenKind_EqSign};
@@ -125,7 +137,10 @@ static bool Tokenizer_nextTok(Tokenizer* self, String* lit, Token* result) {
             String_append(lit, '\0');
             *result = (Token){.kind = TokenKind_VariableReference};
         }
-    } else if (isargch(c) || isquote(c)) {
+        return true;
+    }
+
+    if (isargch(c) || isquote(c)) {
         for (;;) {
             if (isargch(c)) {
                 Tokenizer_readArg(self, lit);
@@ -277,7 +292,13 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
                 String_appendSlice(&cur_arg, buf, len);
                 break;
             }
-            case TokenKind_VariableReference:
+            case TokenKind_Tilda: {
+                null_arg = false;
+                const char* val = Executor_getVar(self, "HOME");
+                String_appendSlice(&cur_arg, val, strlen(val));
+                break;
+            }
+            case TokenKind_VariableReference: {
                 String_append(&lit, '\0');
                 const char* val = Executor_getVar(self, lit.items);
                 if (val) {
@@ -285,6 +306,7 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
                     String_appendSlice(&cur_arg, val, strlen(val));
                 }
                 break;
+            }
         }
         String_clear(&lit);
     }
