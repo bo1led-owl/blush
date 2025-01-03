@@ -28,7 +28,7 @@ const files: []const []const u8 = &.{
 };
 
 pub fn build(b: *std.Build) void {
-    const link_asan = b.option(bool, "use-sanitizers", "Link asan library and use sanitizers") orelse false;
+    const sanitize = b.option(bool, "sanitize", "Link asan library and use sanitizers") orelse false;
 
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -43,12 +43,12 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
-    const flags = if (link_asan) main_flags ++ sanitizer_flags else main_flags;
+    const flags = if (sanitize) main_flags ++ sanitizer_flags else main_flags;
     exe.addCSourceFiles(.{
         .files = files,
         .flags = flags,
     });
-    if (link_asan) {
+    if (sanitize) {
         exe.linkSystemLibrary("asan");
     }
     b.installArtifact(exe);

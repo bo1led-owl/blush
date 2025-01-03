@@ -18,7 +18,12 @@ typedef enum {
     ExecutionResult_Failure,
     ExecutionResult_NeedMoreInput,
 } ExecutionResult;
-ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t len);
+ExecutionResult Executor_execute(Executor* self, const char* cmd, size_t len);
 
-const char* Executor_getVar(Executor* self, const char* name);
+const char* Executor_getVar(Executor* self, const char* name, size_t len);
 void Executor_setVar(Executor* self, const char* name, const char* value, bool replace);
+
+/// Returns `true` if `s` was inserted
+bool Executor_setVarRawMove(Executor* self, char* s, bool replace);
+
+void Executor_setVarRawCopy(Executor* self, const char* s, bool replace);

@@ -16,6 +16,7 @@
     void NAME##_init(NAME* arr);                                       \
     void NAME##_initWithCapacity(NAME* arr, size_t required_capacity); \
     void NAME##_initFromSlice(NAME* arr, const T* ptr, size_t len);    \
+    void NAME##_swap(NAME* lhs, NAME* rhs);                            \
     void NAME##_deinit(NAME* arr);                                     \
     void NAME##_clear(NAME* arr);                                      \
     T* NAME##_toOwnedSlice(NAME* arr);                                 \
@@ -49,6 +50,13 @@
         assert(arr);                                                                              \
         NAME##_initWithCapacity(arr, len);                                                        \
         NAME##_appendSlice(arr, ptr, len);                                                        \
+    }                                                                                             \
+    void NAME##_swap(NAME* lhs, NAME* rhs) {                                                      \
+        assert(lhs);                                                                              \
+        assert(rhs);                                                                              \
+        NAME tmp = *lhs;                                                                          \
+        *lhs = *rhs;                                                                              \
+        *rhs = tmp;                                                                               \
     }                                                                                             \
     void NAME##_deinit(NAME* arr) {                                                               \
         assert(arr);                                                                              \

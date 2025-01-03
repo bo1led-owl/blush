@@ -177,20 +177,20 @@ void Executor_deinit(Executor* self) {
     Vars_deinit(&self->vars);
 }
 
-const char* Executor_getVar(Executor* self, const char* name) {
-    return Vars_get(&self->vars, name);
+const char* Executor_getVar(Executor* self, const char* name, size_t len) {
+    return Vars_get(&self->vars, name, len);
 }
 
 void Executor_setVar(Executor* self, const char* name, const char* value, bool replace) {
     Vars_set(&self->vars, name, value, replace);
 }
 
-void Executor_setVarRaw(Executor* self, char* s, bool replace) {
-    char* eqpos = strchr(s, '=');
-    *eqpos = '\0';
-    const char* name = s;
-    const char* value = eqpos + 1;
-    Executor_setVar(self, name, value, replace);
+bool Executor_setVarRawMove(Executor* self, char* s, bool replace) {
+    return Vars_setRawMove(&self->vars, s, replace);
+}
+
+void Executor_setVarRawCopy(Executor* self, const char* s, bool replace) {
+    Vars_setRawCopy(&self->vars, s, replace);
 }
 
 static int Executor_cd(Executor* self, size_t argc, char const* const* argv) {
@@ -201,7 +201,7 @@ static int Executor_cd(Executor* self, size_t argc, char const* const* argv) {
 
     const char* path = NULL;
     if (argc == 0) {
-        path = Executor_getVar(self, "HOME");
+        path = Executor_getVar(self, "HOME", 4);
     } else if (argc == 1) {
         path = argv[0];
     }
@@ -268,8 +268,8 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
                     leading_assignments = false;
                     Strings_append(&args, String_toOwnedSlice(&cur_arg));
                 } else {
-                    Executor_setVarRaw(self, cur_arg.items, true);
-                    String_clear(&cur_arg);
+                    bool moved = Executor_setVarRawMove(self, String_toOwnedSlice(&cur_arg), true);
+                    assert(moved);
                 }
                 parsing_assignment = false;
                 null_arg = true;
@@ -283,7 +283,11 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
                 break;
             case TokenKind_String:
                 null_arg = false;
-                String_appendSlice(&cur_arg, lit.items, lit.size);
+                if (cur_arg.size == 0 && lit.size != 0) {
+                    String_swap(&cur_arg, &lit);
+                } else {
+                    String_appendSlice(&cur_arg, lit.items, lit.size);
+                }
                 break;
             case TokenKind_LastExitCodeReq: {
                 null_arg = false;
@@ -294,13 +298,12 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
             }
             case TokenKind_Tilda: {
                 null_arg = false;
-                const char* val = Executor_getVar(self, "HOME");
+                const char* val = Executor_getVar(self, "HOME", 4);
                 String_appendSlice(&cur_arg, val, strlen(val));
                 break;
             }
             case TokenKind_VariableReference: {
-                String_append(&lit, '\0');
-                const char* val = Executor_getVar(self, lit.items);
+                const char* val = Executor_getVar(self, lit.items, lit.size);
                 if (val) {
                     null_arg = false;
                     String_appendSlice(&cur_arg, val, strlen(val));
@@ -316,7 +319,8 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
         if (!parsing_assignment) {
             Strings_append(&args, String_toOwnedSlice(&cur_arg));
         } else {
-            Executor_setVarRaw(self, cur_arg.items, true);
+            bool moved = Executor_setVarRawMove(self, String_toOwnedSlice(&cur_arg), true);
+            assert(moved);
         }
     }
 
@@ -332,7 +336,7 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
             Executor_cd(self, args.size - 1, (char const* const*)(args.items + 1));
     } else {
         Strings_append(&args, NULL);
-        const char* path = Executor_getVar(self, "PATH");
+        const char* path = Executor_getVar(self, "PATH", 4);
         char* exe = args.items[0];
 
         size_t exe_len = strlen(exe);

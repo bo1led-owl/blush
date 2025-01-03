@@ -14,4 +14,4 @@ For release mode:
 Where `OPT` is one of Zig's optimization modes: `ReleaseSafe`, `ReleaseSmall` or `ReleaseFast` 
 (also `Debug`, but plain `zig build` is more concise)
 
-To enable sanitizers, pass `-Duse-sanitizers` (this is not guaranteed to work)
+To enable sanitizers, pass `-Dsanitize` (this is not guaranteed to work)

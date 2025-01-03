@@ -29,43 +29,36 @@ void Vars_deinit(Vars* self) {
     VarsImpl_deinit(self);
 }
 
-/// `s` should be "key=value\0", `k` should be null-terminated and contain only the key
-static bool keyeq(const char* s, const char* k) {
-    assert(s);
-    assert(k);
-    const char* eqpos = strchr(s, '=');
-    assert(eqpos != NULL);
-    const size_t s_key_len = (size_t)(eqpos - s);
-    const size_t k_len = strlen(k);
-    if (k_len != s_key_len) {
+static bool keyeq(const char* lhs, const size_t lhs_len, const char* rhs, const size_t rhs_len) {
+    assert(lhs);
+    assert(rhs);
+
+    if (lhs_len != rhs_len) {
         return false;
     }
 
-    for (size_t i = 0; i < k_len; ++i) {
-        if (s[i] != k[i]) {
-            return false;
-        }
-    }
-    return true;
+    assert(lhs_len == rhs_len);
+    return memcmp(lhs, rhs, lhs_len) == 0;
 }
 
-const char* Vars_get(const Vars* self, const char* key) {
+const char* Vars_get(const Vars* self, const char* key, const size_t len) {
     assert(self);
     assert(self->items[self->size - 1] == NULL);
+
     for (size_t i = 0; i < self->size - 1; ++i) {
-        if (keyeq(self->items[i], key)) {
-            return strchr(self->items[i], '=') + 1;
+        const char* eqpos = strchr(self->items[i], '=');
+        const size_t lhs_len = (size_t)(eqpos - self->items[i]);
+        if (keyeq(self->items[i], lhs_len, key, len)) {
+            return eqpos + 1;
         }
     }
 
     return NULL;
 }
 
-static void replaceValue(char** item, const char* new_val) {
-    const char* eqptr = strchr(*item, '=');
-    const size_t key_len = (size_t)(eqptr - *item);
+static void replaceValue(char** item, const size_t key_len, const char* new_val) {
     const size_t new_value_len = strlen(new_val);
-    const size_t old_value_len = strlen(eqptr);
+    const size_t old_value_len = strlen(*item - key_len);
     const size_t new_len = key_len + (old_value_len - new_value_len);
 
     *item = realloc(*item, new_len + 1);
@@ -75,10 +68,14 @@ static void replaceValue(char** item, const char* new_val) {
 void Vars_set(Vars* self, const char* key, const char* value, bool replace) {
     assert(self);
     assert(self->items[self->size - 1] == NULL);
+
+    const size_t rhs_len = strlen(key);
     for (size_t i = 0; i < self->size - 1; ++i) {
-        if (keyeq(self->items[i], key)) {
+        const char* eqpos = strchr(self->items[i], '=');
+        const size_t lhs_len = (size_t)(eqpos - self->items[i]);
+        if (keyeq(self->items[i], lhs_len, key, rhs_len)) {
             if (replace) {
-                replaceValue(&self->items[i], value);
+                replaceValue(&self->items[i], (size_t)(eqpos - self->items[i]), value);
             }
             return;
         }
@@ -88,5 +85,52 @@ void Vars_set(Vars* self, const char* key, const char* value, bool replace) {
     const size_t len = strlen(key) + 1 + strlen(value);
     char* item = malloc(len + 1);
     snprintf(item, len + 1, "%s=%s", key, value);
+    VarsImpl_insert(self, item, self->size - 2);
+}
+
+bool Vars_setRawMove(Vars* self, char* s, bool replace) {
+    assert(self);
+    assert(self->items[self->size - 1] == NULL);
+
+    const size_t rhs_len = (size_t)(strchr(s, '=') - s);
+    for (size_t i = 0; i < self->size - 1; ++i) {
+        const char* eqpos = strchr(self->items[i], '=');
+        const size_t lhs_len = (size_t)(eqpos - self->items[i]);
+        if (keyeq(self->items[i], lhs_len, s, rhs_len)) {
+            if (replace) {
+                free(self->items[i]);
+                self->items[i] = s;
+            }
+            return replace;
+        }
+    }
+
+    // value was not replaced, have to add one
+    VarsImpl_insert(self, s, self->size - 2);
+    return true;
+}
+
+void Vars_setRawCopy(Vars* self, const char* s, bool replace) {
+    assert(self);
+    assert(self->items[self->size - 1] == NULL);
+
+    const size_t s_key_len = (size_t)(strchr(s, '=') - s);
+    for (size_t i = 0; i < self->size - 1; ++i) {
+        const char* eqpos = strchr(self->items[i], '=');
+        const size_t lhs_key_len = (size_t)(eqpos - self->items[i]);
+        if (keyeq(self->items[i], lhs_key_len, s, s_key_len)) {
+            if (replace) {
+                size_t len = strlen(s);
+                self->items[i] = realloc(self->items[i], len + 1);
+                memcpy(self->items[i], s, len + 1);
+            }
+            return;
+        }
+    }
+
+    // value was not replaced, have to add one
+    size_t len = strlen(s);
+    char* item = malloc(len + 1);
+    memcpy(item, s, len + 1);
     VarsImpl_insert(self, item, self->size - 2);
 }

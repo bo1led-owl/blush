@@ -100,12 +100,18 @@ static void updateCursorPosition(void) {
     while (read(STDIN_FILENO, &c, 1) == 1 && c != 'R') {
         if (!isdigit(c)) {
             if (c == ';') {
+                if (*cur_dim == 0) {
+                    *cur_dim = 1;
+                }
                 cur_dim = &state.col;
             }
             continue;
         }
         *cur_dim *= 10;
         *cur_dim += (size_t)(c - '0');
+    }
+    if (*cur_dim == 0) {
+        *cur_dim = 1;
     }
 
     // because the values are starting from 1 (WHY? WHY???)
@@ -149,7 +155,7 @@ static void moveToNextLine(void) {
 }
 
 static void prompt(void) {
-    const char* ps1 = Executor_getVar(&state.executor, "PS1");
+    const char* ps1 = Executor_getVar(&state.executor, "PS1", 3);
     size_t len = strlen(ps1);
     stderrWrite(ps1, len);
     state.line_start = len;
