@@ -2,8 +2,9 @@
 
 #include <assert.h>
 #include <stddef.h>
-#include <stdlib.h>
 #include <string.h>
+
+#include "alloc.h"
 
 #define ARRAY_LIST_STRUCT(T, NAME) \
     typedef struct NAME {          \
@@ -78,7 +79,7 @@
         if (arr->cap >= required_cap)                                                             \
             return;                                                                               \
         arr->cap = required_cap;                                                                  \
-        arr->items = (T*)realloc(arr->items, sizeof(T) * required_cap);                           \
+        arr->items = reallocChecked(arr->items, sizeof(T) * required_cap);                        \
     }                                                                                             \
     void NAME##_ensureCapacity(NAME* arr, size_t required_cap) {                                  \
         assert(arr);                                                                              \
