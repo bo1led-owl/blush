@@ -77,7 +77,7 @@ static int isquote(int c) {
 }
 
 static int isargch(int c) {
-    return isalnum(c) || c == '~' || c == '-' || c == '_' || c == '/' || c == '.';
+    return c != EOF && !isspace(c) && strchr("\"'`$()|&;<>", c) == NULL;
 }
 
 static void Tokenizer_readArg(Tokenizer* self, String* lit) {
