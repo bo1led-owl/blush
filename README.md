@@ -13,4 +13,4 @@ For release mode:
 
     zig build --release=MODE
 
-Where `mode` is one of: `fast`, `small` or `safe`. To enable link-time optimizations, pass `-Dlto`
+Where `MODE` is `fast`, `small` or `safe`. To enable link-time optimizations, pass `-Dlto`
