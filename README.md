@@ -7,12 +7,10 @@ For debug mode:
 
     zig build
 
+To enable sanitizers, pass `-Dsanitize` (this is not guaranteed to work)
+
 For release mode:
 
-    zig build -Doptimize=OPT
+    zig build --release=MODE
 
-Where `OPT` is one of Zig's optimization modes: `ReleaseSafe`, `ReleaseSmall` or `ReleaseFast` 
-(also `Debug`, but plain `zig build` is more concise)
-
-To enable sanitizers, pass `-Dsanitize` (this is not guaranteed to work) \
-To enable link-time optimizations, pass `-Dlto`
+Where `mode` is one of: `fast`, `small` or `safe`. To enable link-time optimizations, pass `-Dlto`
