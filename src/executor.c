@@ -19,6 +19,7 @@ ARRAY_LIST_FULL(char*, Strings)
 
 typedef enum {
     TokenKind_Whitespace,
+    TokenKind_Comment,
     TokenKind_EqSign,
     TokenKind_String,
     TokenKind_Tilda,
@@ -116,7 +117,13 @@ static bool Tokenizer_nextTok(Tokenizer* self, String* lit, Token* result, bool*
         return true;
     }
 
-    if (c == '~') {
+    if (c == '#') {
+        Tokenizer_eatWhileNot(self, '\n');
+        Tokenizer_eatChar(self);
+
+        *result = (Token){.kind = TokenKind_Comment};
+        return true;
+    } else if (c == '~') {
         Tokenizer_eatChar(self);  // eat `~`
         int next_ch = Tokenizer_peekChar(self);
         if (next_ch == EOF || isspace(next_ch) || next_ch == '/') {
@@ -342,7 +349,12 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
     Tokenizer_eatWhile(&tokenizer, isspace);
     while (Tokenizer_nextTok(&tokenizer, &lit, &tok, &need_more_input)) {
         switch (tok.kind) {
+            case TokenKind_Comment:
             case TokenKind_Whitespace:
+                if (tok.kind == TokenKind_Comment && null_arg) {
+                    continue;
+                }
+                
                 String_append(&cur_arg, '\0');
 
                 if (!parsing_assignment) {
