@@ -1,7 +1,11 @@
 #include "executor.h"
 
+#define __USE_POSIX
+#define _POSIX_SOURCE
+
 #include <assert.h>
 #include <ctype.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <sys/stat.h>
@@ -99,7 +103,7 @@ static void Tokenizer_readArg(Tokenizer* self, String* lit) {
     }
 }
 
-static bool Tokenizer_nextTok(Tokenizer* self, String* lit, Token* result) {
+static bool Tokenizer_nextTok(Tokenizer* self, String* lit, Token* result, bool* need_more_input) {
     int c;
     if ((c = Tokenizer_peekChar(self)) == EOF) {
         return false;
@@ -108,12 +112,14 @@ static bool Tokenizer_nextTok(Tokenizer* self, String* lit, Token* result) {
     if (isspace(c)) {
         Tokenizer_eatWhile(self, isspace);
         *result = (Token){.kind = TokenKind_Whitespace};
+        *need_more_input = false;
         return true;
     } else if (c == '~') {
         Tokenizer_eatChar(self);  // eat `~`
         int next_ch = Tokenizer_peekChar(self);
         if (next_ch == EOF || isspace(next_ch) || next_ch == '/') {
             *result = (Token){.kind = TokenKind_Tilda};
+            *need_more_input = false;
             return true;
         } else {
             // otherwise we should fall into `string` case
@@ -122,6 +128,7 @@ static bool Tokenizer_nextTok(Tokenizer* self, String* lit, Token* result) {
     } else if (c == '=') {
         Tokenizer_eatChar(self);  // eat `=`
         *result = (Token){.kind = TokenKind_EqSign};
+        *need_more_input = false;
         return true;
     } else if (c == '$') {
         Tokenizer_eatChar(self);  // eat `$`
@@ -134,9 +141,9 @@ static bool Tokenizer_nextTok(Tokenizer* self, String* lit, Token* result) {
             Tokenizer_eatWhile(self, isalnum);
             size_t len = self->cur - prev_cur;
             String_appendSlice(lit, self->s + prev_cur, len);
-            String_append(lit, '\0');
             *result = (Token){.kind = TokenKind_VariableReference};
         }
+        *need_more_input = false;
         return true;
     }
 
@@ -144,6 +151,7 @@ static bool Tokenizer_nextTok(Tokenizer* self, String* lit, Token* result) {
         for (;;) {
             if (isargch(c)) {
                 Tokenizer_readArg(self, lit);
+                *need_more_input = false;
             } else if (isquote(c)) {
                 size_t prev_cur, len;
                 Tokenizer_eatChar(self);  // eat opening quote
@@ -152,7 +160,12 @@ static bool Tokenizer_nextTok(Tokenizer* self, String* lit, Token* result) {
                 Tokenizer_eatWhileNot(self, (char)c);
                 len = self->cur - prev_cur;
 
-                Tokenizer_eatChar(self);  // eat closing quote
+                c = Tokenizer_eatChar(self);  // eat closing quote
+                if (c == EOF) {
+                    *need_more_input = true;
+                } else {
+                    *need_more_input = false;
+                }
                 String_appendSlice(lit, self->s + prev_cur, len);
             } else {
                 break;
@@ -160,29 +173,41 @@ static bool Tokenizer_nextTok(Tokenizer* self, String* lit, Token* result) {
             c = Tokenizer_peekChar(self);
         }
         *result = (Token){.kind = TokenKind_String};
+        return true;
     } else {
         fprintf(stderr, "%c wtf\n", c);
         abort();
     }
 
-    return true;
+    assert(0);
+    __builtin_unreachable();
 }
 
 void Executor_init(Executor* self) {
     Vars_init(&self->vars);
     self->last_exit_code = 0;
+    self->have_child = false;
 }
 
 void Executor_deinit(Executor* self) {
     Vars_deinit(&self->vars);
 }
 
+const char* Executor_getVarCStr(Executor* self, const char* name) {
+    return Vars_get(&self->vars, name, strlen(name));
+}
+
 const char* Executor_getVar(Executor* self, const char* name, size_t len) {
     return Vars_get(&self->vars, name, len);
 }
 
-void Executor_setVar(Executor* self, const char* name, const char* value, bool replace) {
-    Vars_set(&self->vars, name, value, replace);
+void Executor_setVarCStrs(Executor* self, const char* name, const char* value, bool replace) {
+    Vars_set(&self->vars, name, strlen(name), value, strlen(value), replace);
+}
+
+void Executor_setVar(Executor* self, const char* name, size_t name_len, const char* value,
+                     size_t value_len, bool replace) {
+    Vars_set(&self->vars, name, name_len, value, value_len, replace);
 }
 
 bool Executor_setVarRawMove(Executor* self, char* s, bool replace) {
@@ -201,7 +226,7 @@ static int Executor_cd(Executor* self, size_t argc, char const* const* argv) {
 
     const char* path = NULL;
     if (argc == 0) {
-        path = Executor_getVar(self, "HOME", 4);
+        path = Executor_getVarCStr(self, "HOME");
     } else if (argc == 1) {
         path = argv[0];
     }
@@ -210,34 +235,74 @@ static int Executor_cd(Executor* self, size_t argc, char const* const* argv) {
         perror("cd");
         return 1;
     }
+    Executor_setVarCStrs(self, "PWD", path, true);
     return 0;
 }
 
 /// Returns `true` if the `exec` was successful
-static bool forkExec(char* const* args, char* const* env, int* exit_code) {
+typedef enum {
+    ForkExec_Success,
+    ForkExec_FileNotFound,
+    ForkExec_FileNotExecutable,
+    ForkExec_Error,
+} ForkExecResult;
+
+static ForkExecResult Executor_forkExec(Executor* self, char* const* args, char* const* env,
+                                        int* exit_code) {
     struct stat stats;
     if (stat(args[0], &stats) == -1) {
-        return false;
+        return ForkExec_FileNotFound;
     }
     if (!(stats.st_mode & S_IXUSR)) {  // check whether the file is executable
-        return false;
+        return ForkExec_FileNotExecutable;
+    }
+
+    int fd[2];
+    if (pipe(fd) == -1) {
+        return ForkExec_Error;
     }
 
     pid_t pid = fork();
+    if (pid == -1) {
+        return ForkExec_Error;
+    }
+
     if (pid == 0) {
+        close(fd[0]);
+        dup2(STDOUT_FILENO, fd[1]);
         int res = execve(args[0], args, env);
         if (res == -1) {
             exit(1);
         }
     } else {
+        close(fd[1]);
+        self->have_child = true;
+        self->cur_child = pid;
         int st;
-        waitpid(pid, &st, 0);
+        ssize_t len;
+#define BUFSZ 512
+        char buf[BUFSZ];
+        while ((pid = waitpid(self->cur_child, &st, WNOHANG)) == 0) {
+            len = read(fd[0], buf, BUFSZ);
+            if (len > 0) {
+                write(STDOUT_FILENO, buf, (size_t)len);
+            }
+        }
+        close(fd[0]);
+#undef BUFSZ
         *exit_code = WEXITSTATUS(st);
-        return true;
+        self->have_child = false;
+        return ForkExec_Success;
     }
 
     assert(0);
     __builtin_unreachable();
+}
+
+void Executor_sendSignalToChild(Executor* self, int sig) {
+    if (self->have_child) {
+        kill(self->cur_child, sig);
+    }
 }
 
 ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t len) {
@@ -256,10 +321,11 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
     bool leading_assignments = true;
     bool parsing_assignment = false;
     bool null_arg = true;
+    bool need_more_input = false;
     Token tok;
 
     Tokenizer_eatWhile(&tokenizer, isspace);
-    while (Tokenizer_nextTok(&tokenizer, &lit, &tok)) {
+    while (Tokenizer_nextTok(&tokenizer, &lit, &tok, &need_more_input)) {
         switch (tok.kind) {
             case TokenKind_Whitespace:
                 String_append(&cur_arg, '\0');
@@ -298,7 +364,7 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
             }
             case TokenKind_Tilda: {
                 null_arg = false;
-                const char* val = Executor_getVar(self, "HOME", 4);
+                const char* val = Executor_getVarCStr(self, "HOME");
                 String_appendSlice(&cur_arg, val, strlen(val));
                 break;
             }
@@ -327,6 +393,11 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
     String_deinit(&cur_arg);
     String_deinit(&lit);
 
+    if (need_more_input) {
+        res = ExecutionResult_NeedMoreInput;
+        goto cleanup;
+    }
+
     if (args.size == 0) {
         goto cleanup;
     }
@@ -336,15 +407,23 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
             Executor_cd(self, args.size - 1, (char const* const*)(args.items + 1));
     } else {
         Strings_append(&args, NULL);
-        const char* path = Executor_getVar(self, "PATH", 4);
+        const char* path = Executor_getVarCStr(self, "PATH");
         char* exe = args.items[0];
 
         size_t exe_len = strlen(exe);
         if (exe_len == 0) {
             res = ExecutionResult_Failure;
         } else if (exe[0] == '.' || strchr(exe, '/') != NULL) {
-            if (!forkExec(args.items, self->vars.items, &self->last_exit_code)) {
-                res = ExecutionResult_Failure;
+            switch (Executor_forkExec(self, args.items, self->vars.items, &self->last_exit_code)) {
+                case ForkExec_Success:
+                    break;
+                case ForkExec_Error:
+                    res = ExecutionResult_Error;
+                    break;
+                case ForkExec_FileNotFound:
+                case ForkExec_FileNotExecutable:
+                    res = ExecutionResult_Failure;
+                    break;
             }
         } else {
             String buf;
@@ -371,9 +450,15 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
                 String_append(&buf, '\0');
 
                 args.items[0] = buf.items;
-                if (forkExec(args.items, self->vars.items, &self->last_exit_code)) {
+                ForkExecResult feres =
+                    Executor_forkExec(self, args.items, self->vars.items, &self->last_exit_code);
+                if (feres == ForkExec_Success) {
                     break;
-                } else if (!colon) {
+                } else if (feres == ForkExec_Error) {
+                    res = ExecutionResult_Error;
+                } else if ((feres == ForkExec_FileNotExecutable ||
+                            feres == ForkExec_FileNotFound) &&
+                           !colon) {
                     res = ExecutionResult_Failure;
                     break;
                 } else {

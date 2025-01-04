@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -34,6 +35,7 @@
 #define CURSOR_LINE_START ANSI_LITERAL(G)
 #define CURSOR_RESTORE ANSI_LITERAL(u)
 #define CURSOR_TOPLEFT ANSI_LITERAL(;H)
+#define CURSOR_NEXTLINE ANSI_LITERAL(E)
 #define SCROLL_UP ANSI_LITERAL(S)
 #define CLEAR_SCREEN ANSI_LITERAL(2J)
 #define DSR ANSI_LITERAL(6n) /* Device Status Report */
@@ -48,7 +50,11 @@ static struct {
         State_Normal,
         State_EscSeq,
         State_CtrlSeq,
-    } state;
+    } read_state;
+    bool awaiting_command;
+    bool need_more_input;
+    String command;
+    String line;
     Executor executor;
 } state;
 
@@ -119,6 +125,11 @@ static void updateCursorPosition(void) {
     state.col -= 1;
 }
 
+static void handle_sigint(int sig) {
+    Executor_sendSignalToChild(&state.executor, sig);
+    signal(sig, handle_sigint);
+}
+
 static void handle_winch(int sig) {
     UNUSED(sig);
     updateWindowSize();
@@ -129,6 +140,7 @@ static void handle_winch(int sig) {
 static void deinit(void) {
     disableRawMode();
     Executor_deinit(&state.executor);
+    String_deinit(&state.line);
 }
 
 static void init(void) {
@@ -138,41 +150,132 @@ static void init(void) {
     updateWindowSize();
     updateCursorPosition();
 
+    signal(SIGINT, handle_sigint);
+
+    state.read_state = State_Normal;
+    state.awaiting_command = true;
+    state.need_more_input = false;
+    String_init(&state.line);
+
     Executor_init(&state.executor);
 
-    Executor_setVar(&state.executor, "PS1", "$ ", false);
-    Executor_setVar(&state.executor, "PS2", "> ", false);
+    Executor_setVarCStrs(&state.executor, "PS1", "$ ", false);
+    Executor_setVarCStrs(&state.executor, "PS2", "> ", false);
 }
 
 static void moveToNextLine(void) {
     if (state.row >= state.win_rows - 1) {
         stdoutWriteLiteral(SCROLL_UP);
-    } else {
-        stdoutWriteLiteral(CURSOR_DOWN);
     }
     state.col = 0;
-    stdoutWriteLiteral(CURSOR_LINE_START);
+    stdoutWriteLiteral(CURSOR_NEXTLINE);
 }
 
 static void prompt(void) {
-    const char* ps1 = Executor_getVar(&state.executor, "PS1", 3);
-    size_t len = strlen(ps1);
-    stderrWrite(ps1, len);
+    const char* prompt;
+    if (!state.need_more_input) {
+        prompt = Executor_getVarCStr(&state.executor, "PS1");
+    } else {
+        prompt = Executor_getVarCStr(&state.executor, "PS2");
+    }
+    size_t len = strlen(prompt);
+    stderrWrite(prompt, len);
     state.line_start = len;
     state.col += len;
+}
+
+static void readCharNormal(char c) {
+    switch (c) {
+        case 0x1B:  // escape character
+            state.read_state = State_EscSeq;
+            break;
+        case 12:  // form feed
+            stdoutWriteLiteral(CLEAR_SCREEN CURSOR_TOPLEFT);
+            stdoutFlush();
+            state.row = 0;
+            state.col = 0;
+            state.awaiting_command = true;
+            break;
+        case 8:    // backspace
+        case 127:  // delete
+            if (state.col - state.line_start <= state.line.size && state.col > state.line_start) {
+                String_remove(&state.line, state.col - state.line_start - 1);
+                state.col -= 1;
+
+                // clang-format off
+                printf(ANSI_LITERAL(%zuG), state.line_start + 1);
+                // clang-format on
+                stdoutWriteLiteral(ANSI_LITERAL(0K));  // clear to the end of the line
+                stdoutWrite(state.line.items, state.line.size);
+
+                // clang-format off
+                printf(ANSI_LITERAL(%zuG), state.col + 1);
+                // clang-format on
+
+                stdoutFlush();
+            }
+            break;
+        case '\t':
+            // TODO: completions
+            break;
+        case '\r':
+        case '\n':
+            moveToNextLine();
+            stdoutFlush();
+
+            String_appendSlice(&state.command, state.line.items, state.line.size);
+
+            disableRawMode();
+            switch (Executor_execute(&state.executor, state.command.items, state.command.size)) {
+                case ExecutionResult_Success:
+                    state.need_more_input = false;
+                    String_clear(&state.command);
+                    break;
+                case ExecutionResult_Failure:
+                    fprintf(stderr, "Command not found\n");
+                    state.need_more_input = false;
+                    String_clear(&state.command);
+                    break;
+                case ExecutionResult_Error:
+                    state.need_more_input = false;
+                    String_clear(&state.command);
+                    perror("Failed to execute command");
+                    break;
+                case ExecutionResult_NeedMoreInput:
+                    state.need_more_input = true;
+                    break;
+            }
+            enableRawMode();
+            updateWindowSize();
+            updateCursorPosition();
+
+            String_clear(&state.line);
+            if (state.col != 0) {
+                stdoutWriteLiteral(BG_BRIGHT_WHITE COLOR_BLACK "#" COLOR_RESET);
+                moveToNextLine();
+            }
+            stdoutFlush();
+            state.awaiting_command = true;
+            break;
+        default:
+            String_insert(&state.line, (char)c, state.col - state.line_start);
+            stdoutWriteLiteral(CURSOR_SAVE);
+            stdoutWrite(state.line.items + (state.col - state.line_start),
+                        state.line.size - (state.col - state.line_start));
+            stdoutWriteLiteral(CURSOR_RESTORE CURSOR_FORWARD);
+            stdoutFlush();
+            state.col += 1;
+            break;
+    }
 }
 
 void replLoop(void) {
     init();
 
-    bool awaiting_command = true;
-
-    String line;
-    String_init(&line);
     for (;;) {
-        if (awaiting_command) {
+        if (state.awaiting_command) {
             prompt();
-            awaiting_command = false;
+            state.awaiting_command = false;
         }
 
         int c = getchar();
@@ -180,79 +283,36 @@ void replLoop(void) {
             // errno == 4 means "Interrupted syscall"
             continue;
         }
-        if (c == 4 || (c == EOF && errno == 0)) {
+        if (c == 3) {  // ctrl+C
+            String_clear(&state.command);
+            String_clear(&state.line);
+            if (state.need_more_input) {
+                state.need_more_input = false;
+                stdoutWriteLiteral(CURSOR_LINE_START);
+            } else {
+                stdoutWriteLiteral(CURSOR_NEXTLINE);
+            }
+            stdoutFlush();
+
+            state.awaiting_command = true;
+            state.col = 0;
+            continue;
+        }
+        if (c == 4 || (c == EOF && errno == 0)) {  // ctrl+D
             break;
         }
 
-        switch (state.state) {
+        // printf("%d ", c);
+
+        switch (state.read_state) {
             case State_Normal:
-                switch (c) {
-                    case 0x1B:
-                        state.state = State_EscSeq;
-                        break;
-                    case 12:  // form feed
-                        stdoutWriteLiteral(CLEAR_SCREEN CURSOR_TOPLEFT);
-                        stdoutFlush();
-                        state.row = 0;
-                        state.col = 0;
-                        awaiting_command = true;
-                        break;
-                    case 8:    // backspace
-                    case 127:  // delete
-                        if (state.col - state.line_start <= line.size &&
-                            state.col > state.line_start) {
-                            String_remove(&line, state.col - state.line_start - 1);
-                            state.col -= 1;
-
-                            // clang-format off
-                            printf(ANSI_LITERAL(%zuG), state.line_start + 1);
-                            // clang-format on
-                            stdoutWriteLiteral(ANSI_LITERAL(0K));  // clear to the end of the line
-                            stdoutWrite(line.items, line.size);
-
-                            // clang-format off
-                            printf(ANSI_LITERAL(%zuG), state.col + 1);
-                            // clang-format on
-
-                            stdoutFlush();
-                        }
-                        break;
-                    case '\r':
-                    case '\n':
-                        moveToNextLine();
-                        stdoutFlush();
-
-                        disableRawMode();
-                        if (Executor_execute(&state.executor, line.items, line.size) != 0) {
-                            fprintf(stderr, "Command not found\n");
-                        }
-                        enableRawMode();
-                        updateWindowSize();
-                        updateCursorPosition();
-
-                        String_clear(&line);
-                        if (state.col != 0) {
-                            stdoutWriteLiteral(BG_BRIGHT_WHITE COLOR_BLACK "#" COLOR_RESET);
-                            moveToNextLine();
-                        }
-                        stdoutFlush();
-                        awaiting_command = true;
-                        break;
-                    default:
-                        String_insert(&line, (char)c, state.col - state.line_start);
-                        stdoutWriteLiteral(CURSOR_SAVE);
-                        stdoutWrite(line.items + (state.col - state.line_start),
-                                    line.size - (state.col - state.line_start));
-                        stdoutWriteLiteral(CURSOR_RESTORE CURSOR_FORWARD);
-                        stdoutFlush();
-                        state.col += 1;
-                }
+                readCharNormal((char)c);
                 break;
             case State_EscSeq:
                 if (c == '[') {
-                    state.state = State_CtrlSeq;
+                    state.read_state = State_CtrlSeq;
                 } else {
-                    state.state = State_Normal;
+                    state.read_state = State_Normal;
                 }
                 break;
             case State_CtrlSeq:
@@ -262,7 +322,7 @@ void replLoop(void) {
                     case 'B':  // cursor down
                         break;
                     case 'C':  // cursor forward
-                        if (state.col - state.line_start + 1 <= line.size) {
+                        if (state.col - state.line_start + 1 <= state.line.size) {
                             state.col += 1;
                             stdoutWriteLiteral(CURSOR_FORWARD);
                             stdoutFlush();
@@ -276,10 +336,8 @@ void replLoop(void) {
                         }
                         break;
                 }
-                state.state = State_Normal;
+                state.read_state = State_Normal;
                 break;
         }
     }
-
-    String_deinit(&line);
 }

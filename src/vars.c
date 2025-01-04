@@ -50,6 +50,7 @@ const char* Vars_get(const Vars* self, const char* key, const size_t len) {
     for (size_t i = 0; i < self->size - 1; ++i) {
         const char* eqpos = strchr(self->items[i], '=');
         const size_t lhs_len = (size_t)(eqpos - self->items[i]);
+
         if (keyeq(self->items[i], lhs_len, key, len)) {
             return eqpos + 1;
         }
@@ -58,35 +59,38 @@ const char* Vars_get(const Vars* self, const char* key, const size_t len) {
     return NULL;
 }
 
-static void replaceValue(char** item, const size_t key_len, const char* new_val) {
-    const size_t new_value_len = strlen(new_val);
-    const size_t old_value_len = strlen(*item - key_len);
-    const size_t new_len = key_len + (old_value_len - new_value_len);
+static void replaceValue(char** item, size_t key_len, const char* new_val, size_t val_len) {
+    const size_t new_len = key_len + 1 + val_len;
 
     *item = reallocChecked(*item, new_len + 1);
-    memcpy(*item + key_len + 1, new_val, new_value_len + 1);
+    memcpy(*item + key_len + 1, new_val, val_len);
+    (*item)[new_len] = '\0';
 }
 
-void Vars_set(Vars* self, const char* key, const char* value, bool replace) {
+void Vars_set(Vars* self, const char* key, size_t key_len, const char* value, size_t value_len,
+              bool replace) {
     assert(self);
     assert(self->items[self->size - 1] == NULL);
 
-    const size_t rhs_len = strlen(key);
     for (size_t i = 0; i < self->size - 1; ++i) {
         const char* eqpos = strchr(self->items[i], '=');
-        const size_t lhs_len = (size_t)(eqpos - self->items[i]);
-        if (keyeq(self->items[i], lhs_len, key, rhs_len)) {
+        const size_t cur_key_len = (size_t)(eqpos - self->items[i]);
+        if (keyeq(self->items[i], cur_key_len, key, key_len)) {
             if (replace) {
-                replaceValue(&self->items[i], (size_t)(eqpos - self->items[i]), value);
+                replaceValue(&self->items[i], cur_key_len, value, value_len);
             }
             return;
         }
     }
 
     // value was not replaced, have to add one
-    const size_t len = strlen(key) + 1 + strlen(value);
+    const size_t len = key_len + 1 + value_len;
     char* item = mallocChecked(len + 1);
-    snprintf(item, len + 1, "%s=%s", key, value);
+    memcpy(item, key, key_len);
+    item[key_len] = '=';
+    memcpy(item + key_len + 1, value, value_len);
+    item[len] = '\0';
+
     VarsImpl_insert(self, item, self->size - 2);
 }
 
