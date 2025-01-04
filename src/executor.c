@@ -114,7 +114,9 @@ static bool Tokenizer_nextTok(Tokenizer* self, String* lit, Token* result, bool*
         *result = (Token){.kind = TokenKind_Whitespace};
         *need_more_input = false;
         return true;
-    } else if (c == '~') {
+    }
+
+    if (c == '~') {
         Tokenizer_eatChar(self);  // eat `~`
         int next_ch = Tokenizer_peekChar(self);
         if (next_ch == EOF || isspace(next_ch) || next_ch == '/') {
@@ -175,7 +177,7 @@ static bool Tokenizer_nextTok(Tokenizer* self, String* lit, Token* result, bool*
         *result = (Token){.kind = TokenKind_String};
         return true;
     } else {
-        fprintf(stderr, "%c wtf\n", c);
+        fprintf(stderr, "`%c` wtf?\n", c);
         abort();
     }
 
@@ -257,8 +259,12 @@ static ForkExecResult Executor_forkExec(Executor* self, char* const* args, char*
         return ForkExec_FileNotExecutable;
     }
 
-    int fd[2];
-    if (pipe(fd) == -1) {
+    int stdout_fds[2];
+    if (pipe(stdout_fds) == -1) {
+        return ForkExec_Error;
+    }
+    int stderr_fds[2];
+    if (pipe(stderr_fds) == -1) {
         return ForkExec_Error;
     }
 
@@ -268,14 +274,17 @@ static ForkExecResult Executor_forkExec(Executor* self, char* const* args, char*
     }
 
     if (pid == 0) {
-        close(fd[0]);
-        dup2(STDOUT_FILENO, fd[1]);
+        close(stdout_fds[0]);
+        close(stderr_fds[0]);
+        dup2(STDOUT_FILENO, stdout_fds[1]);
+        dup2(STDERR_FILENO, stderr_fds[1]);
         int res = execve(args[0], args, env);
         if (res == -1) {
             exit(1);
         }
     } else {
-        close(fd[1]);
+        close(stdout_fds[1]);
+        close(stderr_fds[1]);
         self->have_child = true;
         self->cur_child = pid;
         int st;
@@ -283,13 +292,19 @@ static ForkExecResult Executor_forkExec(Executor* self, char* const* args, char*
 #define BUFSZ 512
         char buf[BUFSZ];
         while ((pid = waitpid(self->cur_child, &st, WNOHANG)) == 0) {
-            len = read(fd[0], buf, BUFSZ);
-            if (len > 0) {
-                write(STDOUT_FILENO, buf, (size_t)len);
+            len = read(stdout_fds[0], buf, BUFSZ);
+            while (len > 0) {
+                len -= write(STDOUT_FILENO, buf, (size_t)len);
+            }
+
+            len = read(stderr_fds[0], buf, BUFSZ);
+            while (len > 0) {
+                len -= write(STDERR_FILENO, buf, (size_t)len);
             }
         }
-        close(fd[0]);
 #undef BUFSZ
+        close(stdout_fds[0]);
+        close(stderr_fds[0]);
         *exit_code = WEXITSTATUS(st);
         self->have_child = false;
         return ForkExec_Success;
@@ -397,77 +412,78 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
         res = ExecutionResult_NeedMoreInput;
         goto cleanup;
     }
-
     if (args.size == 0) {
         goto cleanup;
     }
-
     if (strcmp(args.items[0], "cd") == 0) {
         self->last_exit_code =
             Executor_cd(self, args.size - 1, (char const* const*)(args.items + 1));
+        goto cleanup;
+    }
+
+    Strings_append(&args, NULL);
+    char* exe = args.items[0];
+    size_t exe_len = strlen(exe);
+    if (exe_len == 0) {
+        res = ExecutionResult_Failure;
+    } else if (exe[0] == '.' || strchr(exe, '/') != NULL) {
+        // no resolution is needed
+        switch (Executor_forkExec(self, args.items, self->vars.items, &self->last_exit_code)) {
+            case ForkExec_Success:
+                break;
+            case ForkExec_Error:
+                res = ExecutionResult_Error;
+                break;
+            case ForkExec_FileNotFound:
+            case ForkExec_FileNotExecutable:
+                res = ExecutionResult_Failure;
+                break;
+        }
     } else {
-        Strings_append(&args, NULL);
+        // have to resolve using `PATH`
         const char* path = Executor_getVarCStr(self, "PATH");
-        char* exe = args.items[0];
-
-        size_t exe_len = strlen(exe);
-        if (exe_len == 0) {
-            res = ExecutionResult_Failure;
-        } else if (exe[0] == '.' || strchr(exe, '/') != NULL) {
-            switch (Executor_forkExec(self, args.items, self->vars.items, &self->last_exit_code)) {
-                case ForkExec_Success:
-                    break;
-                case ForkExec_Error:
-                    res = ExecutionResult_Error;
-                    break;
-                case ForkExec_FileNotFound:
-                case ForkExec_FileNotExecutable:
-                    res = ExecutionResult_Failure;
-                    break;
-            }
-        } else {
-            String buf;
-            String_init(&buf);
-            for (;;) {
-                const char* colon = strchr(path, ':');
-                const size_t len = (colon) ? (size_t)(colon - path) : strlen(path);
-                if (len == 0) {
-                    if (!colon) {
-                        res = ExecutionResult_Failure;
-                        break;
-                    } else {
-                        path = colon + 1;
-                        continue;
-                    }
-                }
-
-                String_clear(&buf);
-                String_appendSlice(&buf, path, len);
-                if (buf.items[buf.size - 1] != '/') {
-                    String_append(&buf, '/');
-                }
-                String_appendSlice(&buf, exe, exe_len);
-                String_append(&buf, '\0');
-
-                args.items[0] = buf.items;
-                ForkExecResult feres =
-                    Executor_forkExec(self, args.items, self->vars.items, &self->last_exit_code);
-                if (feres == ForkExec_Success) {
-                    break;
-                } else if (feres == ForkExec_Error) {
-                    res = ExecutionResult_Error;
-                } else if ((feres == ForkExec_FileNotExecutable ||
-                            feres == ForkExec_FileNotFound) &&
-                           !colon) {
+        String buf;
+        String_init(&buf);
+        for (;;) {
+            const char* colon = strchr(path, ':');
+            const size_t segment_len = (colon) ? (size_t)(colon - path) : strlen(path);
+            if (segment_len == 0) {
+                if (!colon) {
                     res = ExecutionResult_Failure;
                     break;
                 } else {
                     path = colon + 1;
+                    continue;
                 }
             }
-            String_deinit(&buf);
-            args.items[0] = exe;  // for nice freeing
+
+            // construct the path
+            String_clear(&buf);
+            String_appendSlice(&buf, path, segment_len);
+            if (buf.items[buf.size - 1] != '/') {
+                String_append(&buf, '/');
+            }
+            String_appendSlice(&buf, exe, exe_len);
+            String_append(&buf, '\0');
+
+            // try to execute it
+            args.items[0] = buf.items;
+            ForkExecResult feres =
+                Executor_forkExec(self, args.items, self->vars.items, &self->last_exit_code);
+            if (feres == ForkExec_Success) {
+                break;
+            } else if (feres == ForkExec_Error) {
+                res = ExecutionResult_Error;
+            } else if ((feres == ForkExec_FileNotExecutable || feres == ForkExec_FileNotFound) &&
+                       !colon) {
+                res = ExecutionResult_Failure;
+                break;
+            } else {
+                path = colon + 1;
+            }
         }
+        String_deinit(&buf);
+        args.items[0] = exe;  // for nice freeing
     }
 
 cleanup:
