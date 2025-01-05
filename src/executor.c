@@ -1,8 +1,5 @@
 #include "executor.h"
 
-#define __USE_POSIX
-#define _POSIX_SOURCE
-
 #include <assert.h>
 #include <ctype.h>
 #include <signal.h>
@@ -248,7 +245,6 @@ static int Executor_cd(Executor* self, size_t argc, char const* const* argv) {
     return 0;
 }
 
-/// Returns `true` if the `exec` was successful
 typedef enum {
     ForkExec_Success,
     ForkExec_FileNotFound,
@@ -354,7 +350,7 @@ ExecutionResult Executor_execute(Executor* self, const char* cmd, const size_t l
                 if (tok.kind == TokenKind_Comment && null_arg) {
                     continue;
                 }
-                
+
                 String_append(&cur_arg, '\0');
 
                 if (!parsing_assignment) {
